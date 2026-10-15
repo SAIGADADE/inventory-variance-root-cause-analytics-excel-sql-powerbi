@@ -1,0 +1,48 @@
+// DAX measures. Model: CountEvents (fact), BinRisk (one row per bin), SKUMaster; optional Calendar related to CountEvents[Count_Date].
+// STATUS: written but not yet run in Power BI Desktop. Every measure below has an Excel formula and a SQL query that give the same answer
+// (Excel Summary sheet / sql/05). After you load the data, compare the cards with Excel: Record Accuracy should read 81.3%.
+
+-- ===== Accuracy =====
+Counted Records     = COUNTROWS ( CountEvents )
+Exact Matches       = SUM ( CountEvents[Record_Match_Flag] )
+Variance Records    = [Counted Records] - [Exact Matches]
+Record Accuracy %   = DIVIDE ( [Exact Matches], [Counted Records] )
+Absolute Variance Units = SUM ( CountEvents[Absolute_Variance_Qty] )
+Unit Accuracy % =
+VAR SysQty = SUM ( CountEvents[System_Qty] )
+RETURN IF ( SysQty > 0, MAX ( 0, 1 - DIVIDE ( [Absolute Variance Units], SysQty ) ), BLANK () )   // blank, not an error, when system qty is 0
+
+-- ===== Financial exposure =====
+Variance Value INR  = SUM ( CountEvents[Variance_Value_INR] )
+Net Variance Value INR = SUM ( CountEvents[Signed_Variance_Value_INR] )
+Shortage Value INR  = - CALCULATE ( SUM ( CountEvents[Signed_Variance_Value_INR] ), CountEvents[Signed_Variance_Qty] < 0 )
+Surplus Value INR   = CALCULATE ( SUM ( CountEvents[Signed_Variance_Value_INR] ), CountEvents[Signed_Variance_Qty] > 0 )
+Variance Value Lakh = DIVIDE ( [Variance Value INR], 100000 )
+Variance Value % of Total = DIVIDE ( [Variance Value INR], CALCULATE ( [Variance Value INR], ALLSELECTED ( CountEvents ) ) )
+
+-- ===== Root cause =====
+Initial Equals Confirmed % = DIVIDE ( SUM ( CountEvents[Initial_Matches_Confirmed] ), [Variance Records] )
+Unconfirmed Value % = DIVIDE ( CALCULATE ( [Variance Value INR], CountEvents[Confirmed_Root_Cause] = "Unknown/Unconfirmed" ), [Variance Value INR] )
+Open Or Investigating Variances = CALCULATE ( [Variance Records], CountEvents[Reconciliation_Status] IN { "Open", "Investigating" } )
+
+// Pareto cumulative %: use with Confirmed_Root_Cause on the axis, sorted by [Variance Value INR] descending.
+Cumulative Value % =
+VAR Cur   = [Variance Value INR]
+VAR Causes = ALLSELECTED ( CountEvents[Confirmed_Root_Cause] )
+VAR Running = SUMX ( FILTER ( Causes, [Variance Value INR] >= Cur ), [Variance Value INR] )
+RETURN DIVIDE ( Running, CALCULATE ( [Variance Value INR], ALLSELECTED ( CountEvents[Confirmed_Root_Cause] ) ) )
+
+-- ===== Cycle-count priority (from the BinRisk table) =====
+Locations            = COUNTROWS ( BinRisk )
+Critical Locations   = CALCULATE ( COUNTROWS ( BinRisk ), BinRisk[Priority] = "Critical" )
+High Locations       = CALCULATE ( COUNTROWS ( BinRisk ), BinRisk[Priority] = "High" )
+Critical Plus High   = [Critical Locations] + [High Locations]
+Critical High Value % = DIVIDE ( CALCULATE ( SUM ( BinRisk[Total_Variance_Value] ), BinRisk[Priority] IN { "Critical", "High" } ), SUM ( BinRisk[Total_Variance_Value] ) )
+Avg Risk Score       = AVERAGE ( BinRisk[Risk_Score] )
+
+-- ===== Calendar (create with Modeling > New table; relate Calendar[Date] to CountEvents[Count_Date], many-to-one) =====
+Calendar =
+ADDCOLUMNS (
+    CALENDAR ( DATE ( 2026, 7, 1 ), DATE ( 2026, 9, 30 ) ),
+    "Week Start", [Date] - WEEKDAY ( [Date], 3 )
+)
